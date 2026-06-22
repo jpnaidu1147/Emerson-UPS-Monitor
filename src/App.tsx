@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Server, Power, Usb, Info } from 'lucide-react';
+import { Server, Power, Usb, Info, Download, Settings } from 'lucide-react';
 import { UPSMetrics, UPSEvent, HistoryDataPoint } from './types';
 import { MetricCard } from './components/MetricCard';
 
 import { SystemCharts } from './components/Charts';
 import { EventLog } from './components/EventLog';
 import { VerticalMeter } from './components/VerticalMeter';
+import { SettingsModal, ThresholdSettings } from './components/SettingsModal';
 import { cn } from './lib/utils';
 
 // Helper to generate jitter
@@ -34,6 +35,13 @@ const INITIAL_METRICS: UPSMetrics = {
   estimatedRuntime: 45,
 };
 
+let globalDeferredPrompt: any = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  globalDeferredPrompt = e;
+  window.dispatchEvent(new Event('deferredpromptready'));
+});
+
 export default function App() {
   const [metrics, setMetrics] = useState<UPSMetrics>(INITIAL_METRICS);
   const [events, setEvents] = useState<UPSEvent[]>([
@@ -43,7 +51,98 @@ export default function App() {
   
   const [simulationMode, setSimulationMode] = useState<'NORMAL' | 'OUTAGE' | 'SERIAL'>('NORMAL');
   const [isSerialConnected, setIsSerialConnected] = useState(false);
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstallable, setIsInstallable] = useState(false);
+  
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [thresholds, setThresholds] = useState<ThresholdSettings>(() => {
+    const saved = localStorage.getItem('ups_thresholds');
+    return saved ? JSON.parse(saved) : { 
+      maxLoad: 80, 
+      minBatteryVoltage: 500, 
+      maxBatteryVoltage: 700,
+      baudRate: 9600,
+      dataBits: 8,
+      stopBits: 1
+    };
+  });
+
   const serialReaderRef = useRef<any>(null);
+
+  const handleSaveSettings = (newSettings: ThresholdSettings) => {
+    setThresholds(newSettings);
+    localStorage.setItem('ups_thresholds', JSON.stringify(newSettings));
+    setIsSettingsOpen(false);
+    addEvent('INFO', 'Settings updated successfully.');
+  };
+
+  // PWA Install Prompt handling
+  useEffect(() => {
+    const handleReady = () => {
+      setDeferredPrompt(globalDeferredPrompt);
+      if (globalDeferredPrompt) {
+        setIsInstallable(true);
+        console.log('PWA prompt ready from global');
+      }
+    };
+
+    if (globalDeferredPrompt) {
+      handleReady();
+    }
+
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      globalDeferredPrompt = e;
+      setIsInstallable(true);
+      console.log('PWA prompt ready');
+    };
+
+    const handleAppInstalled = () => {
+      setIsInstallable(false);
+      globalDeferredPrompt = null;
+      setDeferredPrompt(null);
+      console.log('PWA app installed');
+      addEvent('INFO', 'PWA App installed successfully via browser.');
+    };
+
+    window.addEventListener('deferredpromptready', handleReady);
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    // Check if already installed
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+       setIsInstallable(false);
+    } else {
+       // We'll show the button anyway to provide guidance to the user
+       setIsInstallable(true);
+    }
+
+    return () => {
+      window.removeEventListener('deferredpromptready', handleReady);
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === 'accepted') {
+        setIsInstallable(false);
+        addEvent('INFO', 'PWA App installed successfully.');
+      }
+      setDeferredPrompt(null);
+    } else {
+      // Explain why they can't install right now
+      if (window.self !== window.top) {
+        alert("PWA Installation is blocked inside the preview iframe. Please click the 'Open in New Tab' icon (top right arrow) to install this application.");
+      } else {
+         alert("The installation prompt is not available yet. Please use the 'install' icon in your browser's address bar or menu, or wait a few seconds and try again.");
+      }
+    }
+  };
 
   const addEvent = useCallback((type: 'INFO' | 'WARNING' | 'CRITICAL', message: string) => {
     setEvents(prev => [{
@@ -65,7 +164,12 @@ export default function App() {
       }
       
       const port = await navSerial.requestPort();
-      await port.open({ baudRate: 2400 }); // Typical RS232 Liebert UPS baud rate
+      await port.open({ 
+        baudRate: thresholds.baudRate || 9600,
+        dataBits: thresholds.dataBits || 8,
+        stopBits: thresholds.stopBits || 1,
+        // parity is usually 'none' by default which matches the common 9600, 8, N, 1 setup
+      });
       
       setIsSerialConnected(true);
       setSimulationMode('SERIAL');
@@ -223,6 +327,23 @@ export default function App() {
           </div>
           
           <div className="flex items-center gap-3">
+            <button 
+              onClick={() => setIsSettingsOpen(true)}
+              className="px-4 py-2 text-xs font-bold uppercase tracking-widest rounded-xl transition-colors flex items-center gap-2 border bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+            
+            {isInstallable && (
+              <button 
+                onClick={handleInstallClick}
+                className="px-4 py-2 text-xs font-bold uppercase tracking-widest rounded-xl transition-colors flex items-center gap-2 border bg-emerald-500/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20"
+              >
+                <Download className="w-4 h-4" />
+                Install App
+              </button>
+            )}
+            
             {/* New Web Serial button */}
             <button 
               onClick={connectSerial}
@@ -282,6 +403,7 @@ export default function App() {
             unit="PERCENT"
             colorClass="bg-blue-500"
             className="lg:col-span-2 lg:row-span-3"
+            alert={metrics.outputLoadU > thresholds.maxLoad}
           />
           <VerticalMeter 
             title="In Voltage R-N"
@@ -298,11 +420,13 @@ export default function App() {
                title="Battery Voltage #1"
                value={metrics.batteryVoltage1.toFixed(0)}
                unit="V DC"
+               alert={metrics.batteryVoltage1 < thresholds.minBatteryVoltage || metrics.batteryVoltage1 > thresholds.maxBatteryVoltage}
             />
             <MetricCard
                title="DC Voltage"
                value={metrics.dcVoltage.toFixed(0)}
                unit="V DC"
+               alert={metrics.dcVoltage < thresholds.minBatteryVoltage || metrics.dcVoltage > thresholds.maxBatteryVoltage}
             />
             <MetricCard
                title="Output PF"
@@ -372,6 +496,13 @@ export default function App() {
             Serial Requires Chrome/Edge browser.
           </div>
         </footer>
+
+        <SettingsModal 
+          isOpen={isSettingsOpen} 
+          onClose={() => setIsSettingsOpen(false)} 
+          settings={thresholds}
+          onSave={handleSaveSettings}
+        />
 
       </div>
     </div>

@@ -1,0 +1,6 @@
+{
+  "name": "UPS Monitor Dashboard",
+  "description": "A comprehensive UPS monitoring dashboard visualizing real-time power metrics, battery status, and load levels.",
+  "requestFramePermissions": ["serial"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

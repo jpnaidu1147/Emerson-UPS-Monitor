@@ -4,9 +4,8 @@ import path from 'path';
 import {defineConfig} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
-export default defineConfig(() => {
-  return {
-    plugins: [
+export default defineConfig({
+  plugins: [
       react(), 
       tailwindcss(),
       VitePWA({
@@ -52,5 +51,4 @@ export default defineConfig(() => {
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
-  };
 });

@@ -175,29 +175,95 @@ export default function App() {
       setSimulationMode('SERIAL');
       addEvent('INFO', 'COM Port Connected via RS232 USB. Awaiting protocol stream...');
       
-      // Async Read Loop
+      // Async Read & Write Loop
       const textDecoder = new TextDecoderStream();
-      port.readable.pipeTo(textDecoder.writable);
+      const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
       const reader = textDecoder.readable.getReader();
       serialReaderRef.current = reader;
 
+      const textEncoder = new TextEncoderStream();
+      const writableStreamClosed = textEncoder.readable.pipeTo(port.writable);
+      const writer = textEncoder.writable.getWriter();
+      
+      const pollInterval = setInterval(async () => {
+        try {
+          await writer.write('Q1\r');
+        } catch (e) {
+          console.error("Write error:", e);
+        }
+      }, 2000);
+
       try {
+        let buffer = '';
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
-          // In a real Liebert SEC/Megatec scenario, parse 'value' (e.g. "(230.0 230.0 ...")
-          // Here we just log and flash a connection indicator
-          console.log("[SERIAL RX]:", value);
           
-          // Random dummy update strictly to show data processing
-          setMetrics(prev => ({
-            ...prev,
-            inputVoltageR: prev.inputVoltageR + (Math.random() > 0.5 ? 0.1 : -0.1)
-          }));
+          if (value) {
+            buffer += value;
+            const lines = buffer.split('\r');
+            buffer = lines.pop() || ''; 
+            
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (trimmed.startsWith('(')) {
+                console.log("[SERIAL RX MEGATEC]:", trimmed);
+                const parts = trimmed.substring(1).split(' ');
+                if (parts.length >= 8) {
+                  const inputVoltageR = parseFloat(parts[0]);
+                  const outputVoltageU = parseFloat(parts[2]);
+                  const outputLoadU = parseFloat(parts[3]);
+                  const inputFrequency = parseFloat(parts[4]);
+                  const batteryVoltage1 = parseFloat(parts[5]);
+                  const temperature = parseFloat(parts[6]);
+                  const statusBits = parts[7];
+
+                  const isUtilityFail = statusBits[0] === '1';
+                  const isBatteryLow = statusBits[1] === '1';
+                  
+                  const now = new Date();
+                  const timeStr = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(now);
+
+                  setMetrics(prev => {
+                    const newMetrics = {
+                      ...prev,
+                      inputVoltageR: !isNaN(inputVoltageR) ? inputVoltageR : prev.inputVoltageR,
+                      outputVoltageU: !isNaN(outputVoltageU) ? outputVoltageU : prev.outputVoltageU,
+                      outputLoadU: !isNaN(outputLoadU) ? outputLoadU : prev.outputLoadU,
+                      inputFrequency: !isNaN(inputFrequency) ? inputFrequency : prev.inputFrequency,
+                      batteryVoltage1: !isNaN(batteryVoltage1) ? batteryVoltage1 : prev.batteryVoltage1,
+                      dcVoltage: !isNaN(batteryVoltage1) ? batteryVoltage1 : prev.dcVoltage, 
+                      temperature: !isNaN(temperature) ? temperature : prev.temperature,
+                      status: isUtilityFail ? 'ON_BATTERY' : 'ONLINE' as any
+                    };
+                    
+                    const runtimeCoef = 40;
+                    newMetrics.estimatedRuntime = Math.max(0, (newMetrics.batteryLevel * runtimeCoef) / Math.max(1, newMetrics.outputLoadU));
+
+                    setHistory(h => {
+                      const newHistory = [...h, {
+                        time: timeStr,
+                        batteryLevel: Math.round(newMetrics.batteryLevel),
+                        outputLoadU: Math.round(newMetrics.outputLoadU),
+                        inputVoltageR: Math.round(newMetrics.inputVoltageR)
+                      }];
+                      return newHistory.slice(-40);
+                    });
+
+                    return newMetrics;
+                  });
+                }
+              } else {
+                 console.log("[SERIAL RX UNKNOWN]:", trimmed);
+              }
+            }
+          }
         }
       } catch (err) {
         console.error(err);
       } finally {
+        clearInterval(pollInterval);
+        writer.releaseLock();
         reader.releaseLock();
       }
 
